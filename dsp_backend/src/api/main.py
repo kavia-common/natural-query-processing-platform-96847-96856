@@ -1,12 +1,19 @@
-from typing import Any
+from typing import Any, Dict, Optional
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import get_current_user_email
 from .config import settings
 from .db import create_user, get_db, get_user_by_email, init_db
-from .models import LoginRequest, SignupRequest, TokenResponse
+from .models import (
+    LoginRequest,
+    SignupRequest,
+    TokenResponse,
+    QueryRequest,
+    ProxyErrorResponse,
+)
 from .security import create_access_token, hash_password, verify_password
 
 # Initialize DB schema on startup
@@ -119,3 +126,100 @@ def login(payload: LoginRequest) -> TokenResponse:
 def me(current_email: str = Depends(get_current_user_email)) -> dict[str, Any]:
     """Return the current authenticated user's email address."""
     return {"email": current_email}
+
+
+@app.post(
+    "/dsp/query",
+    tags=["dsp"],
+    summary="Proxy query to internal DSP service",
+    response_description="JSON response returned by the DSP service",
+    responses={
+        200: {"description": "Successful proxy to DSP"},
+        400: {"description": "Bad request to DSP", "model": ProxyErrorResponse},
+        401: {"description": "Unauthorized"},
+        502: {"description": "DSP upstream error", "model": ProxyErrorResponse},
+        504: {"description": "DSP timeout", "model": ProxyErrorResponse},
+    },
+)
+async def dsp_query(
+    payload: QueryRequest,
+    current_email: str = Depends(get_current_user_email),
+) -> Dict[str, Any]:
+    """Proxy the query to the internal DSP service.
+
+    This endpoint is protected with JWT (Bearer) auth via get_current_user_email.
+    It forwards the JSON body {query, extras?} to the internal DSP endpoint:
+      POST {DSP_INTERNAL_BASE}/dsp/query
+
+    Security:
+    - Uses a strict httpx.BaseURL client with a fixed base URL from environment
+      to prevent SSRF and path injection.
+    - Only forwards the allowed fields (query, extras).
+
+    Parameters:
+    - payload: QueryRequest containing query and optional extras.
+
+    Returns:
+    - The proxied JSON response from the DSP service on success.
+    - A structured error with clear details on failure.
+    """
+    # Prepare strict base URL client to avoid SSRF
+    base_url = settings.DSP_INTERNAL_BASE.rstrip("/")
+    # Only allow the /dsp/query path under the fixed base URL
+    timeout = settings.DSP_TIMEOUT_SEC
+
+    # Construct the minimal body to forward
+    body: Dict[str, Any] = {"query": payload.query}
+    if getattr(payload, "extras", None) is not None:
+        body["extras"] = payload.extras  # forwarded verbatim
+
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
+            # Explicit path to avoid user-controlled URL parts
+            resp = await client.post("/dsp/query", json=body)
+    except httpx.ReadTimeout:
+        # 504 Gateway Timeout semantics for upstream timeout
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={
+                "error": "upstream_timeout",
+                "detail": "Timed out waiting for response from DSP service",
+                "status_code": 504,
+            },
+        )
+    except httpx.HTTPError as e:
+        # 502 Bad Gateway for generic upstream errors
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "upstream_error",
+                "detail": f"Error communicating with DSP service: {str(e)}",
+                "status_code": 502,
+            },
+        )
+
+    # If upstream returns non-2xx, relay a structured error while preserving status
+    if resp.status_code < 200 or resp.status_code >= 300:
+        # Attempt to parse JSON error; fall back to text
+        err_detail: Optional[Any]
+        try:
+            err_detail = resp.json()
+        except Exception:
+            err_detail = resp.text
+        raise HTTPException(
+            status_code=400 if resp.status_code == 400 else status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "upstream_bad_response",
+                "detail": {
+                    "status": resp.status_code,
+                    "body": err_detail,
+                },
+                "status_code": 400 if resp.status_code == 400 else 502,
+            },
+        )
+
+    # Return the JSON body from upstream if possible; otherwise return text
+    try:
+        return resp.json()
+    except Exception:
+        return {"data": resp.text}
