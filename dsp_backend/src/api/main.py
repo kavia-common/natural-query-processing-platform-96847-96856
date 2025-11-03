@@ -12,11 +12,11 @@ from .models import (
     SignupRequest,
     TokenResponse,
     QueryRequest,
-    ProxyErrorResponse,
 )
 from .security import create_access_token, hash_password, verify_password
 
 # Initialize DB schema on startup
+# This ensures DB tables exist; safe to call at import as it only creates local folder/files.
 init_db()
 
 app = FastAPI(
@@ -135,10 +135,10 @@ def me(current_email: str = Depends(get_current_user_email)) -> dict[str, Any]:
     response_description="JSON response returned by the DSP service",
     responses={
         200: {"description": "Successful proxy to DSP"},
-        400: {"description": "Bad request to DSP", "model": ProxyErrorResponse},
+        400: {"description": "Bad request to DSP"},
         401: {"description": "Unauthorized"},
-        502: {"description": "DSP upstream error", "model": ProxyErrorResponse},
-        504: {"description": "DSP timeout", "model": ProxyErrorResponse},
+        502: {"description": "DSP upstream error"},
+        504: {"description": "DSP timeout"},
     },
 )
 async def dsp_query(
