@@ -165,7 +165,7 @@ async def dsp_query(
     """
     # Prepare strict base URL client to avoid SSRF
     base_url = settings.DSP_INTERNAL_BASE.rstrip("/")
-    # Only allow the /dsp/query path under the fixed base URL
+    # Only allow the exact /dsp/query path under the fixed base URL, with configured timeout
     timeout = settings.DSP_TIMEOUT_SEC
 
     # Construct the minimal body to forward

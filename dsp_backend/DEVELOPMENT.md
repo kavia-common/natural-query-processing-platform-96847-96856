@@ -7,6 +7,16 @@ Create a .env file based on .env.example in this folder to configure:
 - DSP_INTERNAL_BASE and DSP_TIMEOUT_SEC
 - CORS_ALLOW_ORIGINS
 
+Defaults are development-friendly and allow running without a .env file:
+- DB_FILE defaults to dsp_db/dsp.db (container-local)
+- JWT defaults: JWT_SECRET=dev-only-change-me, JWT_ALG=HS256, JWT_EXPIRES_MIN=120
+- DSP_INTERNAL_BASE=http://10.45.30.64, DSP_TIMEOUT_SEC=30
+- CORS_ALLOW_ORIGINS=http://localhost:3000
+
+Rancher/Docker notes:
+- The app should be started binding to 0.0.0.0 (uvicorn config/startup should do this).
+- DB_FILE path is container-local; mount a volume to persist data across restarts.
+
 ## OpenAPI generation
 When you change API routes, models, or metadata, regenerate the OpenAPI spec used by other components:
 
